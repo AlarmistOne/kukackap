@@ -1,0 +1,11 @@
+# Packet captures
+*.pcap
+*.pcapng
+*.cap
+
+# Runtime artefakty
+/tmp/kukackap/
+
+# Logy a hashe
+*.log
+*.hc22000
