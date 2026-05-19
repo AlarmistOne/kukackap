@@ -11,6 +11,9 @@
 Bash framework pro WiFi penetrační testování a laboratorní experimenty.  
 Spravuje hostapd, dnsmasq, iptables a útočné nástroje z jednoho interaktivního menu.
 
+[![Release](https://img.shields.io/github/v/release/AlarmistOne/kukackap?color=56d364&label=release)](https://github.com/AlarmistOne/kukackap/releases/latest)
+[![License](https://img.shields.io/github/license/AlarmistOne/kukackap?color=58a6ff)](LICENSE)
+
 > **⚠️ Pouze pro vlastní zařízení nebo autorizovaný pentest. Neoprávněné použití je trestné.**
 
 ---
