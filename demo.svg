@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="712" viewBox="0 0 780 712">
+<rect width="780" height="712" rx="8" fill="#0d1117"/>
+<circle cx="18" cy="16" r="5" fill="#f85149"/>
+<circle cx="34" cy="16" r="5" fill="#d29922"/>
+<circle cx="50" cy="16" r="5" fill="#3fb950"/>
+<rect x="0" y="28" width="780" height="1" fill="#30363d"/>
+<text font-family="monospace" font-size="13" fill="#e6edf3">
+<tspan x="16" dy="0" y="48" fill="#56d364">  ██╗  ██╗██╗   ██╗██╗  ██╗ █████╗  ██████╗██╗  ██╗ █████╗  █████╗ ██████╗</tspan>
+<tspan x="16" dy="0" y="66" fill="#56d364">  ██║ ██╔╝██║   ██║██║ ██╔╝██╔══██╗██╔════╝██║ ██╔╝██╔══██╗██╔══██╗██╔══██╗</tspan>
+<tspan x="16" dy="0" y="84" fill="#56d364">  █████╔╝ ██║   ██║█████╔╝ ███████║██║     █████╔╝ ███████║███████║██████╔╝</tspan>
+<tspan x="16" dy="0" y="102" fill="#56d364">  ██╔═██╗ ██║   ██║██╔═██╗ ██╔══██║██║     ██╔═██╗ ██╔══██║██╔══██║██╔═══╝</tspan>
+<tspan x="16" dy="0" y="120" fill="#56d364">  ██║  ██╗╚██████╔╝██║  ██╗██║  ██║╚██████╗██║  ██╗██║  ██║██║  ██║██║</tspan>
+<tspan x="16" dy="0" y="138" fill="#56d364">  ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝</tspan>
+<tspan x="16" dy="0" y="156" fill="#e6edf3">            Rogue AP &amp; WiFi Lab Framework  v1.4</tspan>
+<tspan x="16" dy="0" y="174" fill="#bc8cff">                  &quot;Cizí hnízdo, naše vejce.&quot;</tspan>
+<tspan x="16" dy="0" y="192" fill="#e6edf3"></tspan>
+<tspan x="16" dy="0" y="210" fill="#56d364">  .---,     AP iface  : wlx00c0cab83466</tspan>
+<tspan x="16" dy="0" y="228" fill="#56d364"> ( o   \&gt;   Upstream  : wlan0</tspan>
+<tspan x="16" dy="0" y="246" fill="#56d364"> ( ~~~  )   SSID      : FreeWifi    Kanál: 6</tspan>
+<tspan x="16" dy="0" y="264" fill="#56d364">  &#x27;----&#x27;    Terminál  : ptyxis</tspan>
+<tspan x="16" dy="0" y="282" fill="#56d364">  /|  |\    WorkDir   : /tmp/kukackap</tspan>
+<tspan x="16" dy="0" y="300" fill="#e6edf3"></tspan>
+<tspan x="16" dy="0" y="318" fill="#56d364">┌──────────────────────────────────────────────────┐</tspan>
+<tspan x="16" dy="0" y="336" fill="#e6edf3">│  AP módy                                         │</tspan>
+<tspan x="16" dy="0" y="354" fill="#e6edf3">│     1) Open AP + DHCP + NAT                      │</tspan>
+<tspan x="16" dy="0" y="372" fill="#e6edf3">│     2) WPA2 AP + DHCP + NAT                      │</tspan>
+<tspan x="16" dy="0" y="390" fill="#e6edf3">│    10) WPA3-SAE AP + DHCP + NAT                  │</tspan>
+<tspan x="16" dy="0" y="408" fill="#e6edf3">│    11) Multi-SSID (2x SSID na jedné kartě)       │</tspan>
+<tspan x="16" dy="0" y="426" fill="#e6edf3">│  Útoky / Pentest                                 │</tspan>
+<tspan x="16" dy="0" y="444" fill="#f85149">│     4) MITM HTTPS proxy (mitmweb)                │</tspan>
+<tspan x="16" dy="0" y="462" fill="#f85149">│     5) Captive Portal (credential harvester)     │</tspan>
+<tspan x="16" dy="0" y="480" fill="#f85149">│    12) PMKID Capture (hcxdumptool → hashcat)     │</tspan>
+<tspan x="16" dy="0" y="498" fill="#f85149">│    13) WPA-Enterprise / Rogue RADIUS             │</tspan>
+<tspan x="16" dy="0" y="516" fill="#f85149">│    14) Beacon Flood (mdk4)                       │</tspan>
+<tspan x="16" dy="0" y="534" fill="#f85149">│    15) WPS Pixie Dust / Bruteforce               │</tspan>
+<tspan x="16" dy="0" y="552" fill="#e6edf3">│  Pasivní                                         │</tspan>
+<tspan x="16" dy="0" y="570" fill="#d29922">│    16) Channel Hopper + Probe Collector          │</tspan>
+<tspan x="16" dy="0" y="588" fill="#d29922">│    17) Živý přehled klientů (RSSI, TX/RX, IP)   │</tspan>
+<tspan x="16" dy="0" y="606" fill="#e6edf3">│  Servis                                          │</tspan>
+<tspan x="16" dy="0" y="624" fill="#e6edf3">│    18) HTML Report  n) Nastavení  q) Quit        │</tspan>
+<tspan x="16" dy="0" y="642" fill="#56d364">└──────────────────────────────────────────────────┘</tspan>
+<tspan x="16" dy="0" y="660" fill="#e6edf3"></tspan>
+<tspan x="16" dy="0" y="678" fill="#58a6ff">kukackap❯ _</tspan>
+</text>
+</svg>
