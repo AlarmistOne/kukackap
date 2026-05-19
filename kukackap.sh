@@ -2,7 +2,7 @@
 ###############################################################################
 #
 #    .---,      K U K A Č K A P
-#   ( o   \>    Rogue AP & WiFi Lab Framework  v1.4
+#   ( o   \>    Rogue AP & WiFi Lab Framework  v1.4.1
 #   ( ~~~  )    "Cizí hnízdo, naše vejce."
 #    '----'
 #    /|  |\     POUZE pro vlastní zařízení nebo autorizovaný pentest!
@@ -182,7 +182,7 @@ banner() {
   ██║  ██╗╚██████╔╝██║  ██╗██║  ██║╚██████╗██║  ██╗██║  ██║██║  ██║██║
   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝
 EOF
-    printf "%s\n" "${N}${BOLD}            Rogue AP & WiFi Lab Framework  v1.4${N}"
+    printf "%s\n" "${N}${BOLD}            Rogue AP & WiFi Lab Framework  v1.4.1${N}"
     printf "%s\n\n" "${M}                  \"Cizí hnízdo, naše vejce.\"${N}"
 
     # Kukačka z profilu — kulatá hlava + zobák vpravo (žádné kočičí uši)
