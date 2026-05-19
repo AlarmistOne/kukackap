@@ -2,7 +2,7 @@
 ###############################################################################
 #
 #    .---,      K U K A Č K A P
-#   ( o   \>    Rogue AP & WiFi Lab Framework  v1.4.1
+#   ( o   \>    Rogue AP & WiFi Lab Framework  v1.4.2
 #   ( ~~~  )    "Cizí hnízdo, naše vejce."
 #    '----'
 #    /|  |\     POUZE pro vlastní zařízení nebo autorizovaný pentest!
@@ -182,7 +182,7 @@ banner() {
   ██║  ██╗╚██████╔╝██║  ██╗██║  ██║╚██████╗██║  ██╗██║  ██║██║  ██║██║
   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝
 EOF
-    printf "%s\n" "${N}${BOLD}            Rogue AP & WiFi Lab Framework  v1.4.1${N}"
+    printf "%s\n" "${N}${BOLD}            Rogue AP & WiFi Lab Framework  v1.4.2${N}"
     printf "%s\n\n" "${M}                  \"Cizí hnízdo, naše vejce.\"${N}"
 
     # Kukačka z profilu — kulatá hlava + zobák vpravo (žádné kočičí uši)
@@ -517,6 +517,13 @@ EOF
 }
 
 setup_nat() {
+    # Detekuj skutečné výchozí rozhraní — může se lišit od $UPSTREAM při aktivním VPN
+    local real_upstream
+    real_upstream=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+    if [ -n "$real_upstream" ] && [ "$real_upstream" != "$UPSTREAM" ]; then
+        echo "${Y}[!] VPN/jiná trasa detekována: použit $real_upstream místo $UPSTREAM${N}"
+        UPSTREAM="$real_upstream"
+    fi
     echo "${Y}[*] NAT přes $UPSTREAM${N}"
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
     iptables -t nat -F
