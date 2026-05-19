@@ -141,5 +141,7 @@ Bez GUI terminálu spouští vše na pozadí s logováním do souboru.
 
 ## Licence
 
+Distribuováno pod licencí [MIT](LICENSE).
+
 Pouze pro vzdělávací účely a autorizované penetrační testování.  
 Autor nenese odpovědnost za zneužití.
