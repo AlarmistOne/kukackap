@@ -360,6 +360,7 @@ pick_upstream() {
 
 prepare_iface() {
     echo "${Y}[*] Příprava rozhraní $AP_IFACE${N}"
+    rfkill unblock wifi 2>/dev/null || true
     systemctl stop firewalld 2>/dev/null || true
     pkill hostapd 2>/dev/null || true
     pkill -f "dnsmasq -C $WORK_DIR" 2>/dev/null || true
